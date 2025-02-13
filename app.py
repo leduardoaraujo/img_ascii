@@ -5,12 +5,10 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import os
 import platform
-from colorsys import rgb_to_hsv, hsv_to_rgb
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'static/uploads/'
 
-# Caracteres ASCII mais densos para melhor definição
 ascii_chars = "$@B%8&WM#*oahkbdpqwmZO0QLCJUYXzcvunxrjft/\|()1{}[]?-_+~<>i!lI;:,\"^`'. "
 
 def get_system_font():
@@ -40,69 +38,95 @@ def get_system_font():
 
 def enhance_colors(img):
     """Aumenta a saturação e o brilho das cores."""
-    # Converte para float32
     img_float = img.astype(np.float32) / 255.0
     
     # Aumenta o contraste
     img_float = np.clip((img_float - 0.5) * 1.5 + 0.5, 0, 1)
     
-    # Aumenta a saturação
+    # Aumenta a saturação e brilho
     hsv = cv2.cvtColor(img_float, cv2.COLOR_RGB2HSV)
-    hsv[:, :, 1] = hsv[:, :, 1] * 1.5  # Aumenta saturação
-    hsv[:, :, 2] = hsv[:, :, 2] * 1.2  # Aumenta valor (brilho)
+    hsv[:, :, 1] = hsv[:, :, 1] * 1.5  # Saturação
+    hsv[:, :, 2] = np.clip(hsv[:, :, 2] * 1.3, 0, 1)  # Valor/Brilho
     img_enhanced = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
     
     return (np.clip(img_enhanced, 0, 1) * 255).astype(np.uint8)
 
-def calculate_image_size(original_image, max_width=200):
-    """Calcula o tamanho ideal mantendo a proporção."""
-    height, width = original_image.shape[:2]
-    aspect_ratio = height / width
+def get_image_dimensions(image_path):
+    """Obtém as dimensões originais da imagem."""
+    with Image.open(image_path) as img:
+        return img.size
+
+def calculate_font_size(image_width, image_height, target_width=None):
+    """Calcula o tamanho ideal da fonte baseado nas dimensões da imagem."""
+    if target_width is None:
+        target_width = image_width
     
-    # Se a imagem for muito grande, redimensiona mantendo a proporção
-    if width > max_width:
-        new_width = max_width
-        new_height = int(max_width * aspect_ratio)
-    else:
-        new_width = width
-        new_height = height
-        
-    # Garante que a altura não fique muito grande
-    max_height = 200
-    if new_height > max_height:
-        new_height = max_height
-        new_width = int(max_height / aspect_ratio)
+    # Começamos com um tamanho de fonte pequeno
+    font_size = 4
     
-    return new_width, new_height
+    # Encontra o maior tamanho de fonte que mantenha a proporção
+    font_path = get_system_font()
+    while True:
+        try:
+            font = ImageFont.truetype(font_path, size=font_size) if font_path else ImageFont.load_default()
+            char_width, char_height = font.getbbox("W")[2:]
+            
+            chars_per_line = target_width // char_width
+            lines = image_height // char_height
+            
+            # Se o próximo tamanho de fonte seria muito grande, use o atual
+            if chars_per_line < 50 or lines < 50:
+                font_size = max(4, font_size - 1)
+                break
+                
+            font_size += 1
+        except:
+            font_size = max(4, font_size - 1)
+            break
+    
+    return font_size
 
 def image_to_ascii(image_path):
-    # Carrega a imagem em cores
+    # Obtém as dimensões originais
+    orig_width, orig_height = get_image_dimensions(image_path)
+    
+    # Calcula o tamanho da fonte ideal
+    font_size = calculate_font_size(orig_width, orig_height)
+    
+    # Carrega e processa a imagem
     image = cv2.imread(image_path)
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     
-    # Calcula o tamanho ideal
-    target_width, target_height = calculate_image_size(image)
+    # Obtém as dimensões baseadas no tamanho da fonte
+    font_path = get_system_font()
+    try:
+        font = ImageFont.truetype(font_path, size=font_size) if font_path else ImageFont.load_default()
+        char_width, char_height = font.getbbox("W")[2:]
+    except:
+        font = ImageFont.load_default()
+        char_width, char_height = 8, 16
     
-    # Redimensiona a imagem
-    image = cv2.resize(image, (target_width, target_height), interpolation=cv2.INTER_LANCZOS4)
+    # Calcula o número de caracteres necessários
+    num_cols = orig_width // char_width
+    num_rows = orig_height // char_height
+    
+    # Redimensiona a imagem para corresponder exatamente ao grid de caracteres
+    image = cv2.resize(image, (num_cols, num_rows), interpolation=cv2.INTER_LANCZOS4)
     
     # Melhora as cores
     image = enhance_colors(image)
     
-    # Prepara as strings para arte ASCII e informações de cor
+    # Gera a arte ASCII
     ascii_str = ""
     color_data = []
     
-    height, width = image.shape[:2]
-    
-    for i in range(height):
+    for i in range(num_rows):
         line = ""
         line_colors = []
-        for j in range(width):
+        for j in range(num_cols):
             pixel = image[i, j]
             r, g, b = [int(x) for x in pixel]
             
-            # Calcula o brilho usando uma fórmula mais precisa
             brightness = (0.299 * r + 0.587 * g + 0.114 * b)
             ascii_idx = int((brightness * (len(ascii_chars) - 1)) / 255)
             ascii_char = ascii_chars[ascii_idx]
@@ -113,45 +137,35 @@ def image_to_ascii(image_path):
         ascii_str += line + "\n"
         color_data.append(line_colors)
     
-    return ascii_str, color_data
+    return ascii_str, color_data, font_size
 
-def ascii_to_image(ascii_art, color_data, output_path):
+def ascii_to_image(ascii_art, color_data, font_size, output_path):
     lines = ascii_art.split("\n")
     line_length = max(len(line) for line in lines if line)
     
-    # Configura a fonte com tamanho menor para maior resolução
+    # Configura a fonte
     font_path = get_system_font()
-    font_size = 8  # Tamanho menor da fonte para maior resolução
-    
     try:
         font = ImageFont.truetype(font_path, size=font_size) if font_path else ImageFont.load_default()
-        char_width, char_height = font.getbbox("A")[2:]
+        char_width, char_height = font.getbbox("W")[2:]
     except:
         font = ImageFont.load_default()
-        char_width, char_height = 6, 8
+        char_width, char_height = 8, 16
     
-    # Cria a imagem com fundo preto
+    # Cria a imagem
     width = char_width * line_length
     height = char_height * len(color_data)
     image = Image.new("RGB", (width, height), "black")
     draw = ImageDraw.Draw(image)
     
-    # Desenha os caracteres coloridos
+    # Desenha os caracteres
     for y, (line, colors) in enumerate(zip(lines, color_data)):
         for x, (char, color) in enumerate(zip(line, colors)):
-            # Posição precisa para cada caractere
             pos_x = x * char_width
             pos_y = y * char_height
-            
-            # Desenha o caractere com a cor correspondente
-            draw.text(
-                (pos_x, pos_y),
-                char,
-                fill=color,
-                font=font
-            )
+            draw.text((pos_x, pos_y), char, fill=color, font=font)
     
-    # Salva a imagem com alta qualidade
+    # Salva a imagem
     image.save(output_path, quality=95)
 
 @app.route('/')
@@ -171,11 +185,11 @@ def upload_file():
         file.save(file_path)
         
         # Converte para ASCII com cores
-        ascii_art, color_data = image_to_ascii(file_path)
+        ascii_art, color_data, font_size = image_to_ascii(file_path)
         
         # Cria a imagem ASCII colorida
         ascii_image_path = os.path.join(app.config['UPLOAD_FOLDER'], 'ascii_art_colored.png')
-        ascii_to_image(ascii_art, color_data, ascii_image_path)
+        ascii_to_image(ascii_art, color_data, font_size, ascii_image_path)
         
         return render_template('index.html', ascii_art=ascii_art, ascii_image='ascii_art_colored.png')
 
