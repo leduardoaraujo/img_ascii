@@ -25,3 +25,11 @@ pre {
     padding: 10px;
     border: 1px solid #ccc;
 }
+
+img {
+    max-width: 100%;
+    height: auto;
+    border: 1px solid #ccc;
+    padding: 10px;
+    background-color: #fff;
+}

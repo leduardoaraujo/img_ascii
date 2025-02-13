@@ -13,7 +13,10 @@
         <button type="submit">Convert to ASCII</button>
     </form>
     {% if ascii_art %}
+        <h2>ASCII Art:</h2>
         <pre>{{ ascii_art }}</pre>
+        <h2>ASCII Art Image:</h2>
+        <img src="{{ url_for('serve_file', filename=ascii_image) }}" alt="ASCII Art Image">
     {% endif %}
 </body>
 </html>
